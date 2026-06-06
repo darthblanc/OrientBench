@@ -1,6 +1,4 @@
-import json
 import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -25,6 +23,7 @@ FAKE_RESULT = {
 @pytest.fixture(autouse=True)
 def clear_runs():
     _runs.clear()
+    api_module.limiter._storage.reset()
     yield
     _runs.clear()
 
@@ -36,7 +35,7 @@ def client():
 
 # --- Upload size limit ---
 
-def test_post_run_passes_api_key_to_factory(client, tmp_path):
+def test_post_run_passes_api_key_to_factory(client):
     with patch("src.api.RunnerFactory.create") as mock_factory:
         mock_factory.return_value.run.return_value = FAKE_RESULT
         client.post(
@@ -47,7 +46,7 @@ def test_post_run_passes_api_key_to_factory(client, tmp_path):
     mock_factory.assert_called_once_with(model="claude-haiku-4-5", api_key="sk-ant-test")
 
 
-def test_post_run_passes_none_key_when_omitted(client, tmp_path):
+def test_post_run_passes_none_key_when_omitted(client):
     with patch("src.api.RunnerFactory.create") as mock_factory:
         mock_factory.return_value.run.return_value = FAKE_RESULT
         client.post(
@@ -71,12 +70,8 @@ def test_rejects_oversized_upload(client):
 
 # --- POST /run ---
 
-def test_post_run_returns_id_and_running_status(client, tmp_path):
-    mock_runner = MagicMock()
-    mock_runner.run.return_value = FAKE_RESULT
-
-    with patch("src.api.RunnerFactory.create", return_value=mock_runner), \
-         patch("src.api.RESULTS_DIR", tmp_path / "results"):
+def test_post_run_returns_id_and_running_status(client):
+    with patch("src.api.RunnerFactory.create", return_value=MagicMock(run=MagicMock(return_value=FAKE_RESULT))):
         response = client.post(
             "/run",
             data={"model": "claude-haiku-4-5-20251001", "id_col": "title", "n": "5"},
@@ -89,13 +84,9 @@ def test_post_run_returns_id_and_running_status(client, tmp_path):
     assert body["status"] == "running"
 
 
-def test_post_run_each_call_gets_unique_id(client, tmp_path):
-    mock_runner = MagicMock()
-    mock_runner.run.return_value = FAKE_RESULT
-
-    results_dir = tmp_path / "results"
-    with patch("src.api.RunnerFactory.create", return_value=mock_runner), \
-         patch("src.api.RESULTS_DIR", results_dir):
+def test_post_run_each_call_gets_unique_id(client):
+    mock_runner = MagicMock(run=MagicMock(return_value=FAKE_RESULT))
+    with patch("src.api.RunnerFactory.create", return_value=mock_runner):
         r1 = client.post(
             "/run",
             data={"model": "claude-haiku-4-5-20251001", "id_col": "title"},
@@ -132,15 +123,22 @@ def test_get_run_failed_state(client):
     assert "something went wrong" in response.json()["error"]
 
 
+def test_get_run_clears_entry_after_done(client):
+    _runs["my-run"] = {"status": "done", "result": FAKE_RESULT}
+    client.get("/run/my-run")
+    assert "my-run" not in _runs
+
+
+def test_get_run_clears_entry_after_failed(client):
+    _runs["bad-run"] = {"status": "failed", "error": "boom"}
+    client.get("/run/bad-run")
+    assert "bad-run" not in _runs
+
+
 # --- Background execution ---
 
-def test_run_completes_in_background(client, tmp_path):
-    mock_runner = MagicMock()
-    mock_runner.run.return_value = FAKE_RESULT
-    results_dir = tmp_path / "results"
-
-    with patch("src.api.RunnerFactory.create", return_value=mock_runner), \
-         patch("src.api.RESULTS_DIR", results_dir):
+def test_run_completes_in_background(client):
+    with patch("src.api.RunnerFactory.create", return_value=MagicMock(run=MagicMock(return_value=FAKE_RESULT))):
         response = client.post(
             "/run",
             data={"model": "claude-haiku-4-5-20251001", "id_col": "title", "n": "2"},
@@ -154,17 +152,17 @@ def test_run_completes_in_background(client, tmp_path):
             break
         time.sleep(0.05)
 
-    assert _runs[run_id]["status"] == "done"
-    assert any(results_dir.glob("*.json"))
+    state = client.get(f"/run/{run_id}").json()
+    assert state["status"] == "done"
+    assert state["result"] == FAKE_RESULT
+    assert run_id not in _runs
 
 
-def test_run_failure_stored_in_state(client, tmp_path):
+def test_run_failure_stored_in_state(client):
     mock_runner = MagicMock()
     mock_runner.run.side_effect = RuntimeError("model not found")
-    results_dir = tmp_path / "results"
 
-    with patch("src.api.RunnerFactory.create", return_value=mock_runner), \
-         patch("src.api.RESULTS_DIR", results_dir):
+    with patch("src.api.RunnerFactory.create", return_value=mock_runner):
         response = client.post(
             "/run",
             data={"model": "bogus-model", "id_col": "title"},
@@ -178,36 +176,7 @@ def test_run_failure_stored_in_state(client, tmp_path):
             break
         time.sleep(0.05)
 
-    assert _runs[run_id]["status"] == "failed"
-    assert "model not found" in _runs[run_id]["error"]
-
-
-# --- GET /results ---
-
-def test_get_results_empty(client, tmp_path, monkeypatch):
-    monkeypatch.setattr(api_module, "RESULTS_DIR", tmp_path / "empty")
-    response = client.get("/results")
-    assert response.status_code == 200
-    assert response.json() == []
-
-
-def test_get_results_lists_json_files(client, tmp_path, monkeypatch):
-    results_dir = tmp_path / "results"
-    results_dir.mkdir()
-    data = {
-        "dataset": "movies",
-        "model": "claude-haiku-4-5-20251001",
-        "timestamp": "2026-06-04T10:00:00",
-        "results": [{"task_kind": "cell_recall"}, {"task_kind": "comparison"}],
-    }
-    (results_dir / "movies_20260604_100000.json").write_text(json.dumps(data))
-    monkeypatch.setattr(api_module, "RESULTS_DIR", results_dir)
-
-    response = client.get("/results")
-    assert response.status_code == 200
-    items = response.json()
-    assert len(items) == 1
-    assert items[0]["dataset"] == "movies"
-    assert items[0]["model"] == "claude-haiku-4-5-20251001"
-    assert items[0]["n_tasks"] == 2
-    assert items[0]["file"] == "movies_20260604_100000.json"
+    state = client.get(f"/run/{run_id}").json()
+    assert state["status"] == "failed"
+    assert "model not found" in state["error"]
+    assert run_id not in _runs

@@ -38,10 +38,14 @@ Tasks cycle round-robin through all four types. Each task receives its own rando
 | Model | Provider |
 |---|---|
 | `claude-haiku-4-5` | Anthropic (Batch API) |
+| `claude-haiku-4-5-20251001` | Anthropic (Batch API) |
 | `claude-sonnet-4-6` | Anthropic (Batch API) |
 | `claude-opus-4-8` | Anthropic (Batch API) |
-| `gpt-4o-mini` | OpenAI |
-| `gpt-4o` | OpenAI |
+| `gpt-4o-mini` | OpenAI (Batch API) |
+| `gpt-4o` | OpenAI (Batch API) |
+| `gpt-5.4-mini` | OpenAI (Batch API) |
+| `gpt-5.4` | OpenAI (Batch API) |
+| `gpt-5.5` | OpenAI (Batch API) |
 | `qwen2.5:3b` | Ollama (local) |
 | `qwen3:8b` | Ollama (local) |
 | `llama3:8b` | Ollama (local) |
@@ -63,6 +67,8 @@ OPENAI_API_KEY=sk-...
 
 ## Web UI
 
+![CSV Orientation Experiment UI](docs/frontend.png)
+
 Start the backend:
 
 ```bash
@@ -78,6 +84,16 @@ npm run dev
 ```
 
 Open `http://localhost:5173`. Upload a CSV, choose a model, enter your API key, and run. Results download automatically as JSON when the run completes.
+
+### Recovering results
+
+Batch runs (Anthropic, OpenAI) can take minutes. If you lose your session:
+
+| Situation | Recovery |
+|---|---|
+| Browser refreshed mid-run | Polling resumes automatically on reload — the run ID is saved in `localStorage` and results survive up to 2 hours on the backend |
+| Auto-download completed but you closed the tab | Use **"Load a saved results file"** in the Recover results panel to re-display the downloaded JSON |
+| Download was never triggered (closed before run finished) | Use **"Re-parse raw batch results from provider"**: download the raw JSONL from the [Anthropic console](https://console.anthropic.com) → Batches, or the OpenAI dashboard → Batch jobs, then upload it along with the original CSV using the same run parameters (n, seed, id column) |
 
 ## CLI
 
@@ -159,7 +175,7 @@ src/
     base.py           BaseRunner ABC
     factory.py        RunnerFactory — routes by model name
     anthropic_runner.py  Batch API inference
-    openai_runner.py     Chat completions inference
+    openai_runner.py     Batch API inference
     ollama_runner.py     Local inference via Ollama
 frontend/             React + Vite web UI
 tests/                Unit tests

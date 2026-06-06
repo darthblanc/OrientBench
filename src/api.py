@@ -1,14 +1,16 @@
-import json
 import os
 import tempfile
 import threading
+import time
 import uuid
-from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 from dotenv import load_dotenv
 
@@ -17,6 +19,7 @@ from src.runners.factory import RunnerFactory
 load_dotenv()
 
 MAX_UPLOAD_BYTES = 1 * 1024 * 1024
+RUN_TTL = 7200  # seconds; completed/failed runs evicted after this
 
 
 class ContentSizeLimitMiddleware(BaseHTTPMiddleware):
@@ -27,7 +30,12 @@ class ContentSizeLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(title="CSV Orientation Experiment")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 _origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",")]
 app.add_middleware(
     CORSMiddleware,
@@ -39,8 +47,15 @@ app.add_middleware(ContentSizeLimitMiddleware)
 
 _runs: dict[str, dict] = {}
 
-RESULTS_DIR = Path("results")
 
+def _evict_stale_runs() -> None:
+    cutoff = time.time() - RUN_TTL
+    to_delete = [
+        rid for rid, state in list(_runs.items())
+        if state.get("status") != "running" and state.get("_ts", 0) < cutoff
+    ]
+    for rid in to_delete:
+        _runs.pop(rid, None)
 
 def _execute_run(
     run_id: str, csv_path: str, model: str, id_col: str,
@@ -50,21 +65,17 @@ def _execute_run(
     try:
         runner = RunnerFactory.create(model=model, api_key=api_key)
         data = runner.run(csv_path, id_col, n=n, seed=seed, max_rows=max_rows, cols=cols)
-
-        RESULTS_DIR.mkdir(exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_path = RESULTS_DIR / f"{data['dataset']}_{ts}.json"
-        out_path.write_text(json.dumps(data, indent=2))
-
-        _runs[run_id] = {"status": "done", "result_path": str(out_path), "result": data}
+        _runs[run_id] = {"status": "done", "_ts": time.time(), "result": data}
     except Exception as exc:
-        _runs[run_id] = {"status": "failed", "error": str(exc)}
+        _runs[run_id] = {"status": "failed", "_ts": time.time(), "error": str(exc)}
     finally:
         Path(csv_path).unlink(missing_ok=True)
 
 
 @app.post("/run")
+@limiter.limit("5/minute")
 async def post_run(
+    request: Request,
     csv: UploadFile = File(...),
     model: str = Form(...),
     id_col: str = Form(...),
@@ -74,6 +85,7 @@ async def post_run(
     cols: str = Form(""),
     api_key: str = Form(""),
 ) -> dict:
+    _evict_stale_runs()
     run_id = str(uuid.uuid4())
     cols_list = [c.strip() for c in cols.split(",") if c.strip()] if cols else None
     key = api_key.strip() or None
@@ -102,32 +114,9 @@ def get_run(run_id: str) -> dict:
     state = _runs.get(run_id)
     if state is None:
         raise HTTPException(status_code=404, detail="Run not found")
-    return state
+    response = {k: v for k, v in state.items() if not k.startswith("_")}
+    if state.get("status") in ("done", "failed"):
+        _runs.pop(run_id, None)
+    return response
 
 
-@app.get("/results/{filename}")
-def get_result(filename: str) -> dict:
-    p = RESULTS_DIR / filename
-    if not p.exists() or p.suffix != ".json":
-        raise HTTPException(status_code=404, detail="Result not found")
-    return json.loads(p.read_text())
-
-
-@app.get("/results")
-def list_results() -> list[dict]:
-    if not RESULTS_DIR.exists():
-        return []
-    items = []
-    for p in sorted(RESULTS_DIR.glob("*.json")):
-        try:
-            data = json.loads(p.read_text())
-            items.append({
-                "file": p.name,
-                "dataset": data.get("dataset"),
-                "model": data.get("model"),
-                "timestamp": data.get("timestamp"),
-                "n_tasks": len(data.get("results", [])),
-            })
-        except Exception:
-            pass
-    return items

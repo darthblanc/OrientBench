@@ -34,7 +34,6 @@ def report(result_paths: list[str]) -> None:
             delta = col_acc - row_acc
             all_rows.append((dataset, model, kind, row_acc, col_acc, delta, row_n))
 
-    # totals per dataset
     totals: dict[str, dict] = defaultdict(lambda: {"row": [0, 0], "col": [0, 0]})
     for path in result_paths:
         data = json.loads(Path(path).read_text())

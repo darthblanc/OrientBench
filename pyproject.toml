@@ -2,7 +2,17 @@
 name = "csv-orientation-experiment"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["pandas", "ollama", "anthropic", "openai", "python-dotenv", "fastapi", "python-multipart", "uvicorn"]
+dependencies = [
+    "pandas",
+    "ollama",
+    "anthropic",
+    "openai",
+    "python-dotenv",
+    "fastapi",
+    "python-multipart",
+    "uvicorn",
+    "slowapi>=0.1.9",
+]
 
 [project.optional-dependencies]
 dev = ["pytest", "httpx"]

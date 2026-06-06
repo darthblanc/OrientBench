@@ -1,7 +1,4 @@
-[build]
-buildCommand = "python -m pip install ."
-
 [deploy]
-startCommand = "python -m uvicorn src.api:app --host 0.0.0.0 --port $PORT"
+startCommand = "uv run python -m uvicorn src.api:app --host 0.0.0.0 --port $PORT"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 10

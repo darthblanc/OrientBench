@@ -9,12 +9,12 @@ const MODELS: { group: string; provider: string; models: string[] }[] = [
   {
     group: 'Anthropic',
     provider: 'anthropic',
-    models: ['claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-opus-4-8'],
+    models: ['claude-haiku-4-5', 'claude-haiku-4-5-20251001', 'claude-sonnet-4-6', 'claude-opus-4-8'],
   },
   {
     group: 'OpenAI',
     provider: 'openai',
-    models: ['gpt-4o-mini', 'gpt-4o'],
+    models: ['gpt-4o-mini', 'gpt-4o', 'gpt-5.4-mini', 'gpt-5.4', 'gpt-5.5'],
   },
 ]
 
@@ -174,7 +174,11 @@ function ResultCard({ result }: { result: RunResult }) {
 
 // ── File input ───────────────────────────────────────────────────────────────
 
-function FileInput({ onChange }: { onChange: (f: File | null) => void }) {
+function FileInput({ onChange, accept = '.csv', required = true }: {
+  onChange: (f: File | null) => void
+  accept?: string
+  required?: boolean
+}) {
   const ref = useRef<HTMLInputElement>(null)
   const [name, setName] = useState<string | null>(null)
 
@@ -193,8 +197,8 @@ function FileInput({ onChange }: { onChange: (f: File | null) => void }) {
       <input
         ref={ref}
         type="file"
-        accept=".csv"
-        required
+        accept={accept}
+        required={required}
         onChange={handleChange}
         style={{ display: 'none' }}
       />
@@ -222,6 +226,153 @@ function ConfirmModal({ message, onConfirm, onCancel }: {
   )
 }
 
+// ── Reload saved JSON ─────────────────────────────────────────────────────────
+
+function ReloadJsonSection({ onLoaded }: { onLoaded: (result: RunResult) => void }) {
+  const [error, setError] = useState<string | null>(null)
+
+  function handleFile(f: File | null) {
+    if (!f) return
+    setError(null)
+    const reader = new FileReader()
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(reader.result as string)
+        if (!parsed || !Array.isArray(parsed.results) || !parsed.dataset || !parsed.model) {
+          setError('File does not look like a results JSON from this app.')
+          return
+        }
+        onLoaded(parsed as RunResult)
+      } catch {
+        setError('Could not parse file — make sure it is a valid JSON file.')
+      }
+    }
+    reader.readAsText(f)
+  }
+
+  return (
+    <details className="recovery-section">
+      <summary>Load a saved results file</summary>
+      <div className="recovery-body">
+        <p className="recovery-hint">Upload a JSON file previously downloaded from this app to view the results again.</p>
+        <div className="field">
+          <label>Results JSON</label>
+          <FileInput onChange={handleFile} accept=".json" required={false} />
+        </div>
+        {error && <p className="status-msg error">{error}</p>}
+      </div>
+    </details>
+  )
+}
+
+// ── Re-parse raw batch JSONL ──────────────────────────────────────────────────
+
+function BatchReparseSection({ onLoaded }: { onLoaded: (result: RunResult) => void }) {
+  const [csvFile, setCsvFile] = useState<File | null>(null)
+  const [jsonlFile, setJsonlFile] = useState<File | null>(null)
+  const [model, setModel] = useState(MODELS[0].models[0])
+  const [idCol, setIdCol] = useState('content_id')
+  const [n, setN] = useState(20)
+  const [seed, setSeed] = useState(42)
+  const [maxRows, setMaxRows] = useState(15)
+  const [cols, setCols] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!csvFile || !jsonlFile) return
+    setError(null)
+    setSubmitting(true)
+    const fd = new FormData()
+    fd.append('csv', csvFile)
+    fd.append('batch_results', jsonlFile)
+    fd.append('model', model)
+    fd.append('id_col', idCol)
+    fd.append('n', String(n))
+    fd.append('seed', String(seed))
+    fd.append('max_rows', String(maxRows))
+    fd.append('cols', cols)
+    try {
+      const res = await fetch(`${API_URL}/upload-batch`, { method: 'POST', body: fd })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        setError(body.detail ?? `Server error ${res.status}`)
+        return
+      }
+      onLoaded(await res.json() as RunResult)
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <details className="recovery-section">
+      <summary>Re-parse raw batch results from provider</summary>
+      <div className="recovery-body">
+        <p className="recovery-hint">
+          Upload the original CSV and the raw JSONL batch output from Anthropic or OpenAI to re-score the results.
+          Use the same parameters as the original run.
+        </p>
+        <form onSubmit={handleSubmit} className="run-form">
+          <div className="field">
+            <label>Original CSV</label>
+            <FileInput onChange={setCsvFile} accept=".csv" />
+          </div>
+          <div className="field">
+            <label>Batch results JSONL</label>
+            <FileInput onChange={setJsonlFile} accept=".jsonl,.txt" />
+          </div>
+          <div className="field">
+            <label>Model</label>
+            <select value={model} onChange={e => setModel(e.target.value)}>
+              {MODELS.map(({ group, models }) => (
+                <optgroup key={group} label={group}>
+                  {models.map(m => <option key={m} value={m}>{m}</option>)}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label>
+              ID column
+              <Tooltip text="Must match the ID column used in the original run." />
+            </label>
+            <input type="text" value={idCol} onChange={e => setIdCol(e.target.value)} required />
+          </div>
+          <div className="field-row">
+            <div className="field">
+              <label>n tasks</label>
+              <input type="number" min={1} value={n} onChange={e => setN(Number(e.target.value))} />
+            </div>
+            <div className="field">
+              <label>Seed</label>
+              <input type="number" value={seed} onChange={e => setSeed(Number(e.target.value))} />
+            </div>
+            <div className="field">
+              <label>Max rows</label>
+              <input type="number" min={1} value={maxRows} onChange={e => setMaxRows(Number(e.target.value))} />
+            </div>
+          </div>
+          <div className="field">
+            <label>
+              Columns
+              <Tooltip text="Must match the columns filter used in the original run. Leave blank if you did not filter." />
+            </label>
+            <input type="text" value={cols} onChange={e => setCols(e.target.value)} placeholder="blank = all" />
+          </div>
+          <button type="submit" disabled={submitting || !csvFile || !jsonlFile}>
+            {submitting ? 'Parsing…' : 'Parse results'}
+          </button>
+          {error && <p className="status-msg error">{error}</p>}
+        </form>
+      </div>
+    </details>
+  )
+}
+
 // ── Run panel ─────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -240,20 +391,38 @@ export default function App() {
   const [showConfirm, setShowConfirm] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  // Resume polling for a run that survived a page refresh
+  useEffect(() => {
+    const saved = localStorage.getItem('activeRunId')
+    if (saved && !runId) {
+      setRunId(saved)
+      setRunState({ status: 'running' })
+    }
+  }, [])
+
   useEffect(() => {
     if (!runId) return
     pollRef.current = setInterval(async () => {
       try {
         const res = await fetch(`${API_URL}/run/${runId}`)
+        if (res.status === 404) {
+          // Run expired from backend before we could fetch it
+          localStorage.removeItem('activeRunId')
+          setRunState({ status: 'failed', error: 'Run expired — the server evicted the result before it could be retrieved.' })
+          clearInterval(pollRef.current!)
+          return
+        }
         const data: RunState = await res.json()
         setRunState(data)
         if (data.status !== 'running') {
+          localStorage.removeItem('activeRunId')
           clearInterval(pollRef.current!)
           if (data.status === 'done' && data.result) {
             downloadResult(data.result)
           }
         }
       } catch (err) {
+        localStorage.removeItem('activeRunId')
         setRunState({ status: 'failed', error: String(err) })
         clearInterval(pollRef.current!)
       }
@@ -282,6 +451,7 @@ export default function App() {
     try {
       const res = await fetch(`${API_URL}/run`, { method: 'POST', body: fd })
       const data: { id: string } = await res.json()
+      localStorage.setItem('activeRunId', data.id)
       setRunId(data.id)
       setRunState({ status: 'running' })
     } catch (err) {
@@ -299,6 +469,11 @@ export default function App() {
   }
 
   const busy = submitting || runState?.status === 'running'
+
+  function handleRecoveredResult(result: RunResult) {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+    setRunState({ status: 'done', result })
+  }
 
   return (
     <>
@@ -395,6 +570,11 @@ export default function App() {
             </div>
           )}
         </div>
+      <div className="panel recovery-panel">
+        <h2 className="recovery-heading">Recover results</h2>
+        <ReloadJsonSection onLoaded={handleRecoveredResult} />
+        <BatchReparseSection onLoaded={handleRecoveredResult} />
+      </div>
     </div>
 
     {showConfirm && (

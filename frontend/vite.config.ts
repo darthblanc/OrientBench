@@ -7,6 +7,7 @@ export default defineConfig({
     proxy: {
       '/run': 'http://localhost:8000',
       '/results': 'http://localhost:8000',
+      '/upload-batch': 'http://localhost:8000',
     },
   },
 })

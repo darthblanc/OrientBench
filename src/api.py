@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import threading
 import uuid
@@ -27,9 +28,10 @@ class ContentSizeLimitMiddleware(BaseHTTPMiddleware):
 
 
 app = FastAPI(title="CSV Orientation Experiment")
+_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",")]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

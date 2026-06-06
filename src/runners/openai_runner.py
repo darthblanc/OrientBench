@@ -1,3 +1,6 @@
+import io
+import json
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -7,17 +10,18 @@ from dotenv import load_dotenv
 
 from src.prompt import build_prompt
 from src.runners.base import BaseRunner
-from src.tasks import generate_tasks
+from src.tasks import Task, generate_tasks
 
 load_dotenv()
 
 
 class OpenAIRunner(BaseRunner):
 
-    def __init__(self, model: str, api_key: str | None = None):
+    def __init__(self, model: str, api_key: str | None = None, poll_interval: int = 30):
         self.model = model
         self._api_key = api_key
         self._client = None
+        self.poll_interval = poll_interval
 
     @property
     def client(self) -> OpenAI:
@@ -33,6 +37,42 @@ class OpenAIRunner(BaseRunner):
         )
         return response.choices[0].message.content.strip()
 
+    def build_batch_requests(self, tasks: list[Task]) -> list[dict]:
+        requests = []
+        for i, task in enumerate(tasks):
+            for orientation in ("row", "col"):
+                requests.append({
+                    "custom_id": f"{i}_{orientation}",
+                    "method": "POST",
+                    "url": "/v1/chat/completions",
+                    "body": {
+                        "model": self.model,
+                        "messages": [{"role": "user", "content": build_prompt(task, orientation)}],
+                        "max_tokens": 256,
+                    },
+                })
+        return requests
+
+    def parse_batch_results(self, content: str, tasks: list[Task]) -> list[dict]:
+        by_id: dict[str, str] = {}
+        for line in content.strip().splitlines():
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            cid = item["custom_id"]
+            response = item.get("response")
+            if response and response.get("status_code") == 200:
+                by_id[cid] = response["body"]["choices"][0]["message"]["content"].strip()
+            else:
+                by_id[cid] = ""
+
+        results = []
+        for i, task in enumerate(tasks):
+            row_answer = by_id.get(f"{i}_row", "")
+            col_answer = by_id.get(f"{i}_col", "")
+            results.append(self._build_result_entry(task, row_answer, col_answer))
+        return results
+
     def run(
         self,
         csv_path: str,
@@ -46,17 +86,33 @@ class OpenAIRunner(BaseRunner):
         tasks = generate_tasks(df, id_col=id_col, n=n, seed=seed, max_rows=max_rows, cols=cols)
         dataset = Path(csv_path).stem
 
-        results = []
-        for i, task in enumerate(tasks):
-            print(f"  [{i+1}/{n}] {task.kind}: {task.question[:60]}...", flush=True)
-            row_answer = self._query(build_prompt(task, "row"))
-            col_answer = self._query(build_prompt(task, "col"))
-            results.append(self._build_result_entry(task, row_answer, col_answer))
+        batch_requests = self.build_batch_requests(tasks)
+        jsonl_bytes = "\n".join(json.dumps(r) for r in batch_requests).encode()
+
+        uploaded = self.client.files.create(
+            file=("batch.jsonl", io.BytesIO(jsonl_bytes), "application/jsonl"),
+            purpose="batch",
+        )
+
+        batch = self.client.batches.create(
+            input_file_id=uploaded.id,
+            endpoint="/v1/chat/completions",
+            completion_window="24h",
+        )
+
+        while batch.status not in ("completed", "failed", "expired", "cancelled"):
+            time.sleep(self.poll_interval)
+            batch = self.client.batches.retrieve(batch.id)
+
+        content = self.client.files.content(batch.output_file_id).text
+        result_entries = self.parse_batch_results(content, tasks)
 
         return {
             "dataset": dataset,
             "model": self.model,
+            "mode": "batch",
+            "batch_id": batch.id,
             "timestamp": datetime.now().isoformat(),
             "id_col": id_col,
-            "results": results,
+            "results": result_entries,
         }

@@ -1,3 +1,4 @@
+import logging
 import time
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +14,8 @@ from src.runners.base import BaseRunner
 from src.tasks import Task, generate_tasks
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 class AnthropicRunner(BaseRunner):
@@ -87,7 +90,7 @@ class AnthropicRunner(BaseRunner):
         tasks = generate_tasks(df, id_col=id_col, n=n, seed=seed, max_rows=max_rows, cols=cols)
         dataset = Path(csv_path).stem
 
-        print(f"Building {len(tasks) * 2} batch requests...")
+        logger.info(f"Building {len(tasks) * 2} batch requests...")
         raw_requests = self.build_batch_requests(tasks)
         batch_requests = [
             Request(
@@ -97,19 +100,19 @@ class AnthropicRunner(BaseRunner):
             for r in raw_requests
         ]
 
-        print("Submitting batch...")
+        logger.info("Submitting batch...")
         batch = self.client.messages.batches.create(requests=batch_requests)
-        print(f"Batch ID: {batch.id}")
+        logger.info(f"Batch ID: {batch.id}")
 
         while True:
             batch = self.client.messages.batches.retrieve(batch.id)
             counts = batch.request_counts
-            print(f"  Status: {batch.processing_status} — processing: {counts.processing}, done: {counts.succeeded + counts.errored}")
+            logger.info(f"  Status: {batch.processing_status} — processing: {counts.processing}, done: {counts.succeeded + counts.errored}")
             if batch.processing_status == "ended":
                 break
             time.sleep(self.poll_interval)
 
-        print("Collecting results...")
+        logger.info("Collecting results...")
         raw_results = list(self.client.messages.batches.results(batch.id))
         results = self.parse_batch_results(raw_results, tasks)
 

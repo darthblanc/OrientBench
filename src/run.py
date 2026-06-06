@@ -15,9 +15,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 if __name__ == "__main__":
     import json
+    import logging
     from datetime import datetime
     from pathlib import Path
     from src.runners.factory import RunnerFactory
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     args = build_parser().parse_args()
 

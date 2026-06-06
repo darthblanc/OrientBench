@@ -1,14 +1,10 @@
-import io
-import json
 import os
 import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
-import pandas as pd
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
@@ -19,7 +15,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from dotenv import load_dotenv
 
 from src.runners.factory import RunnerFactory
-from src.tasks import generate_tasks
 
 load_dotenv()
 
@@ -123,73 +118,5 @@ def get_run(run_id: str) -> dict:
     if state.get("status") in ("done", "failed"):
         _runs.pop(run_id, None)
     return response
-
-
-@app.post("/upload-batch")
-@limiter.limit("5/minute")
-async def upload_batch(
-    request: Request,
-    csv: UploadFile = File(...),
-    batch_results: UploadFile = File(...),
-    model: str = Form(...),
-    id_col: str = Form(...),
-    n: int = Form(20),
-    seed: int = Form(42),
-    max_rows: int = Form(15),
-    cols: str = Form(""),
-) -> dict:
-    cols_list = [c.strip() for c in cols.split(",") if c.strip()] if cols else None
-
-    csv_bytes = await csv.read(MAX_UPLOAD_BYTES + 1)
-    if len(csv_bytes) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=f"Upload exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit")
-
-    try:
-        df = pd.read_csv(io.BytesIO(csv_bytes))
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"CSV parse error: {exc}")
-
-    tasks = generate_tasks(df, id_col=id_col, n=n, seed=seed, max_rows=max_rows, cols=cols_list)
-
-    jsonl_text = (await batch_results.read()).decode("utf-8")
-    lines = [line for line in jsonl_text.strip().splitlines() if line.strip()]
-    if not lines:
-        raise HTTPException(status_code=400, detail="Batch results file is empty")
-
-    try:
-        first = json.loads(lines[0])
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid JSONL: {exc}")
-
-    if "result" in first:
-        provider = "anthropic"
-    elif "response" in first:
-        provider = "openai"
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail="Unrecognised batch results format: expected Anthropic ('result' key) or OpenAI ('response' key)",
-        )
-
-    runner = RunnerFactory.create(model=model, api_key=None)
-
-    try:
-        if provider == "anthropic":
-            raw = [json.loads(line) for line in lines]
-            result_entries = runner.parse_batch_results(raw, tasks)
-        else:
-            result_entries = runner.parse_batch_results(jsonl_text, tasks)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid JSONL line: {exc}")
-
-    dataset_name = Path(csv.filename).stem if csv.filename else "upload"
-    return {
-        "dataset": dataset_name,
-        "model": model,
-        "mode": "batch_upload",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "id_col": id_col,
-        "results": result_entries,
-    }
 
 

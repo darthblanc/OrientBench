@@ -41,6 +41,8 @@ app = FastAPI(title="CSV Orientation Experiment")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+app.add_middleware(ContentSizeLimitMiddleware)
+
 _origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",")]
 app.add_middleware(
     CORSMiddleware,
@@ -48,7 +50,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(ContentSizeLimitMiddleware)
 
 _runs: dict[str, dict] = {}
 

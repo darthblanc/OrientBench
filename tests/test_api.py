@@ -70,6 +70,21 @@ def test_rejects_oversized_upload(client):
     assert response.status_code == 413
 
 
+def test_oversized_upload_response_carries_cors_headers(client):
+    big_csv = "a,b\n" + ("x," * 500 + "\n") * 1000
+    response = client.post(
+        "/run",
+        data={"model": "claude-haiku-4-5", "id_col": "a"},
+        files={"csv": ("big.csv", big_csv, "text/csv")},
+        headers={
+            "content-length": str(api_module.MAX_UPLOAD_BYTES + 1),
+            "origin": "https://orientbench.netlify.app",
+        },
+    )
+    assert response.status_code == 413
+    assert response.headers.get("access-control-allow-origin") == "*"
+
+
 # --- POST /run ---
 
 def test_post_run_returns_id_and_running_status(client):

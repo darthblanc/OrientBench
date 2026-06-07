@@ -101,10 +101,9 @@ Batch runs (Anthropic, OpenAI) can take minutes. If you lose your session:
 python -m src.run \
   --model claude-haiku-4-5 \
   --id-col content_id \
-  --n 50 \
-  --max-rows 10 \
-  --cols title,genre,rating \
-  data/raw/ott_movies_subset.csv
+  --n 20 \
+  --max-rows 5 \
+  data/raw/ott_movies_clean_unique.csv
 ```
 
 | Flag | Default | Description |
@@ -125,17 +124,20 @@ python -m src.report results/*.json
 ```
 
 ```
-dataset             model           task_type    row_acc  col_acc   delta     n
-------------------------------------------------------------------------------------
-ott_movies_subset   claude-haiku-4-5  attr_scan   80.0%    72.0%   -8.0%    50
-ott_movies_subset   claude-haiku-4-5  cell_recall 96.0%    88.0%   -8.0%    50
-ott_movies_subset   claude-haiku-4-5  comparison  84.0%    76.0%   -8.0%    50
-ott_movies_subset   claude-haiku-4-5  row_list    72.0%    60.0%  -12.0%    50
-------------------------------------------------------------------------------------
-ott_movies_subset (all)               TOTAL       83.0%    74.0%   -9.0%   200
+dataset                   model              task_type    row_acc  col_acc    delta    n
+-------------------------------------------------------------------------------------------
+ott_movies_clean_unique   claude-haiku-4-5   attr_scan    44.0%    40.0%    -4.0%   50
+ott_movies_clean_unique   claude-haiku-4-5   cell_recall 100.0%   100.0%    +0.0%   50
+ott_movies_clean_unique   claude-haiku-4-5   comparison   70.0%    68.0%    -2.0%   50
+ott_movies_clean_unique   claude-haiku-4-5   row_list    100.0%   100.0%    +0.0%   50
+-------------------------------------------------------------------------------------------
+ott_movies_clean_unique (all)                TOTAL        78.5%    77.0%    -1.5%  200
 ```
 
 `delta = col_acc − row_acc`. Negative means row-wise performed better.
+
+See [`docs/findings.md`](docs/findings.md) for a write-up comparing orientation
+sensitivity across model sizes.
 
 ## Managing the model registry
 
